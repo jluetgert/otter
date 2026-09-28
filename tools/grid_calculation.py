@@ -17,7 +17,7 @@ qoz_pad_factor = 2
 qoz_linear_n_points = 2**12
 # the k-grid is big for calculation, but the inputs most of the time only
 # require the first few k
-k_cutoff = 600
+k_grid = np.linspace(0, 10, 200)  # units of 1/a0
 
 # Sample parameters
 T_e = np.linspace(5, 100, 1)
@@ -29,8 +29,6 @@ alpha = [1]
 output = ["Sii", "q", "f", "f_nl", "E_nl", "Zbar", "Zstar"]
 
 ###
-
-k_points = qoz_linear_n_points * qoz_pad_factor if k_cutoff is None else k_cutoff
 
 
 def otter_calc(T_e, rho, alpha):
@@ -100,14 +98,21 @@ def otter_calc(T_e, rho, alpha):
                     break
     E_nl = np.where(np.isfinite(E_nl), E_nl, 0)
     return (
-        ion_res["k"],
-        ion_res["sij_k"],
+        interp_axis(k_grid, ion_res["k"], ion_res["sij_k"], 2),
         ion_res["zbar"],
         zstar,
-        q_k,
-        f_k,
-        f_nl,
+        interp_axis(k_grid, ion_res["k"], q_k, 1),
+        interp_axis(k_grid, ion_res["k"], f_k, 1),
+        interp_axis(k_grid, ion_res["k"], f_nl, 2),
         E_nl,
+    )
+
+
+def interp_axis(x_grid, x, array, axis):
+    return np.apply_along_axis(
+        lambda y: np.interp(x_grid, x, y),
+        axis=axis,
+        arr=array,
     )
 
 
@@ -128,27 +133,27 @@ def run(T_e, rho, alpha, filename, n_workers=None):
         if "Sii" in output:
             Sii = f.create_dataset(
                 "S_ii",
-                shape=(len(elements), len(elements), k_points, n, m, p),
+                shape=(len(elements), len(elements), len(k_grid), n, m, p),
                 dtype=np.float64,
-                chunks=(len(elements), len(elements), k_points, 1, 1, 1),
+                chunks=(len(elements), len(elements), len(k_grid), 1, 1, 1),
             )
             Sii.attrs["axis"] = ["i", "j", "k", "T_e", "rho", "alpha"]
             Sii.attrs["unit"] = [""]
         if "f" in output:
             f_k = f.create_dataset(
                 "f",
-                shape=(len(elements), k_points, n, m, p),
+                shape=(len(elements), len(k_grid), n, m, p),
                 dtype=np.float64,
-                chunks=(len(elements), k_points, 1, 1, 1),
+                chunks=(len(elements), len(k_grid), 1, 1, 1),
             )
             f_k.attrs["axis"] = ["i", "k", "T_e", "rho", "alpha"]
             f_k.attrs["unit"] = [""]
         if "f_nl" in output:
             f_nl = f.create_dataset(
                 "f_nl",
-                shape=(len(elements), 10, k_points, n, m, p),
+                shape=(len(elements), 10, len(k_grid), n, m, p),
                 dtype=np.float64,
-                chunks=(len(elements), 10, k_points, 1, 1, 1),
+                chunks=(len(elements), 10, len(k_grid), 1, 1, 1),
             )
             f_nl.attrs["axis"] = ["i", "orbital", "k", "T_e", "rho", "alpha"]
             f_nl.attrs["unit"] = [""]
@@ -164,9 +169,9 @@ def run(T_e, rho, alpha, filename, n_workers=None):
         if "q" in output:
             q_k = f.create_dataset(
                 "q",
-                shape=(len(elements), k_points, n, m, p),
+                shape=(len(elements), len(k_grid), n, m, p),
                 dtype=np.float64,
-                chunks=(len(elements), k_points, 1, 1, 1),
+                chunks=(len(elements), len(k_grid), 1, 1, 1),
             )
             q_k.attrs["axis"] = ["i", "k", "T_e", "rho", "alpha"]
             q_k.attrs["unit"] = [""]
@@ -199,9 +204,10 @@ def run(T_e, rho, alpha, filename, n_workers=None):
 
         k_out = axis.create_dataset(
             "k",
-            shape=(k_points),
+            shape=(len(k_grid)),
             dtype=np.float64,
         )
+        k_out[:] = k_grid
         k_out.attrs["unit"] = ["1/a0"]
 
         rho_out = axis.create_dataset(
@@ -263,7 +269,6 @@ def run(T_e, rho, alpha, filename, n_workers=None):
             for future in as_completed(futures):
                 n_idx, m_idx, p_idx, result = future.result()
                 (
-                    res_k,
                     res_Sii,
                     res_Zbar,
                     res_Zstar,
@@ -273,19 +278,18 @@ def run(T_e, rho, alpha, filename, n_workers=None):
                     res_E_nl,
                 ) = result
 
-                k_out[:] = res_k[:k_cutoff]
                 if "Sii" in output:
-                    Sii[:, :, :, n_idx, m_idx, p_idx] = res_Sii[:, :, :k_cutoff]
+                    Sii[:, :, :, n_idx, m_idx, p_idx] = res_Sii[:, :, :]
                 if "Zbar" in output:
                     Zbar[:, n_idx, m_idx, p_idx] = res_Zbar
                 if "Zstar" in output:
                     Zstar[:, n_idx, m_idx, p_idx] = res_Zstar
                 if "q" in output:
-                    q_k[:, :, n_idx, m_idx, p_idx] = res_q[:, :k_cutoff]
+                    q_k[:, :, n_idx, m_idx, p_idx] = res_q[:, :]
                 if "f" in output:
-                    f_k[:, :, n_idx, m_idx, p_idx] = res_f[:, :k_cutoff]
+                    f_k[:, :, n_idx, m_idx, p_idx] = res_f[:, :]
                 if "f_nl" in output:
-                    f_nl[:, :, :, n_idx, m_idx, p_idx] = res_f_nl[:, :, :k_cutoff]
+                    f_nl[:, :, :, n_idx, m_idx, p_idx] = res_f_nl[:, :, :]
                 if "E_nl" in output:
                     E_nl[:, :, n_idx, m_idx, p_idx] = res_E_nl
                 f.flush()
